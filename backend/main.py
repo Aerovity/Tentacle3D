@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from PIL import Image
 import io
 import mimetypes
+import shutil
 
 # Load environment variables from .env file
 load_dotenv()
@@ -440,7 +441,7 @@ async def get_task_status(task_id: str):
 
 @app.get("/task/{task_id}/download")
 async def download_3d_model(task_id: str, format: str = "glb"):
-    """Download the generated 3D model"""
+    """Download and save the generated 3D model to /models folder"""
     
     if not tripo3d_client:
         raise HTTPException(
@@ -458,30 +459,80 @@ async def download_3d_model(task_id: str, format: str = "glb"):
                 detail=f"Task not completed. Current status: {task_response.status}"
             )
         
-        if not task_response.output or "model" not in task_response.output:
+        if not task_response.output:
             raise HTTPException(
                 status_code=404,
                 detail="3D model not found in task output"
             )
         
-        # Get download URL for requested format
-        model_urls = task_response.output["model"]["urls"]
+        # Try to extract model download URLs from various possible keys
+        model_urls = None
+        model_url = None
+        available_formats = []
+        output = task_response.output
         
-        if format not in model_urls:
+        # 1. Try output['model']['urls'] (current code)
+        if "model" in output and isinstance(output["model"], dict) and "urls" in output["model"]:
+            model_urls = output["model"]["urls"]
             available_formats = list(model_urls.keys())
+            if format in model_urls:
+                model_url = model_urls[format]
+        # 2. Try output['model_urls']
+        elif "model_urls" in output and isinstance(output["model_urls"], dict):
+            model_urls = output["model_urls"]
+            available_formats = list(model_urls.keys())
+            if format in model_urls:
+                model_url = model_urls[format]
+        # 3. Try output['pbr_model'] (actual Tripo3D API response)
+        elif "pbr_model" in output and isinstance(output["pbr_model"], str):
+            model_url = output["pbr_model"]
+            available_formats = ["glb"]
+        # 4. Try output['model_url'] (single URL, fallback to format)
+        elif "model_url" in output and isinstance(output["model_url"], str):
+            model_url = output["model_url"]
+            available_formats = [format]
+        # 5. Try output['url'] (single URL, fallback to format)
+        elif "url" in output and isinstance(output["url"], str):
+            model_url = output["url"]
+            available_formats = [format]
+        # 6. Try output['model'] as a direct URL (rare)
+        elif "model" in output and isinstance(output["model"], str):
+            model_url = output["model"]
+            available_formats = [format]
+        
+        if not model_url:
+            logger.error(f"Model download URL not found. Output dict: {json.dumps(output, indent=2)}")
             raise HTTPException(
                 status_code=400,
-                detail=f"Format '{format}' not available. Available formats: {available_formats}"
+                detail=f"Could not find model download URL for format '{format}'. Available formats: {available_formats} | Output keys: {list(output.keys())}"
             )
         
-        download_url = model_urls[format]
         filename = f"{task_id}.{format}"
         
-        # Download and serve file
-        file_path = await tripo3d_client.download_file(download_url, filename)
+        # Create models directory if it doesn't exist
+        models_dir = "models"
+        os.makedirs(models_dir, exist_ok=True)
+        
+        # Download file to models directory
+        model_path = os.path.join(models_dir, filename)
+        
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            response = await client.get(model_url)
+            
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Failed to download file: Status {response.status_code}"
+                )
+            
+            # Save to models directory
+            with open(model_path, "wb") as f:
+                f.write(response.content)
+            
+            logger.info(f"Model saved to: {model_path} ({len(response.content)} bytes)")
         
         return FileResponse(
-            file_path,
+            model_path,
             media_type="application/octet-stream",
             filename=filename
         )
@@ -491,6 +542,28 @@ async def download_3d_model(task_id: str, format: str = "glb"):
     except Exception as e:
         logger.error(f"Error downloading 3D model: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/models/{filename}")
+async def serve_model(filename: str):
+    """Serve 3D model files from the models directory"""
+    models_dir = "models"
+    file_path = os.path.join(models_dir, filename)
+    
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Model file not found")
+    
+    # Determine media type based on file extension
+    media_type = "application/octet-stream"
+    if filename.endswith('.glb'):
+        media_type = "model/gltf-binary"
+    elif filename.endswith('.gltf'):
+        media_type = "model/gltf+json"
+    
+    return FileResponse(
+        file_path,
+        media_type=media_type,
+        filename=filename
+    )
 
 async def monitor_task_progress(task_id: str):
     """Background task to monitor conversion progress"""

@@ -101,47 +101,30 @@ function LoadingFallback() {
   )
 }
 
-// Simplified Center component to avoid dependency issues
-function SimpleCenter({ children }: { children: React.ReactNode }) {
-  return (
-    <group position={[0, 0, 0]}>
-      {children}
-    </group>
-  )
-}
-
 interface ThreeSceneProps {
   modelUrl: string | null
 }
 
 export function ThreeScene({ modelUrl }: ThreeSceneProps) {
-  const [isClient, setIsClient] = useState(false)
-  const [sceneError, setSceneError] = useState<string | null>(null)
+  const [mounted, setMounted] = useState(false)
 
   useEffect(() => {
-    setIsClient(true)
+    setMounted(true)
   }, [])
 
-  if (!isClient) {
+  if (!mounted) {
     return (
       <div className="w-full h-full flex items-center justify-center bg-gray-800">
-        <div className="text-white">Initializing 3D Viewer...</div>
+        <div className="text-white">Initializing 3D Scene...</div>
       </div>
     )
   }
 
-  if (sceneError) {
+  if (!modelUrl) {
     return (
       <div className="w-full h-full flex items-center justify-center bg-gray-800">
-        <div className="text-red-400 text-center">
-          <p>3D Viewer Error</p>
-          <p className="text-sm mt-2">{sceneError}</p>
-          <button
-            onClick={() => setSceneError(null)}
-            className="mt-4 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-          >
-            Retry
-          </button>
+        <div className="text-gray-400 text-center">
+          <p>No 3D model to display</p>
         </div>
       </div>
     )
@@ -162,10 +145,14 @@ export function ThreeScene({ modelUrl }: ThreeSceneProps) {
           gl.shadowMap.type = THREE.PCFSoftShadowMap
           scene.fog = new THREE.Fog(0x1f2937, 10, 50)
         }}
-        onError={(error) => {
-          console.error("Canvas error:", error)
-          setSceneError("Failed to initialize 3D canvas")
-        }}
+        fallback={
+          <div className="w-full h-full flex items-center justify-center bg-gray-800">
+            <div className="text-red-400 text-center">
+              <p>WebGL not supported</p>
+              <p className="text-sm mt-2">Your browser doesn't support 3D graphics</p>
+            </div>
+          </div>
+        }
       >
         {/* Lighting setup */}
         <ambientLight intensity={0.4} />
@@ -180,11 +167,7 @@ export function ThreeScene({ modelUrl }: ThreeSceneProps) {
         <spotLight position={[0, 10, 0]} angle={0.3} penumbra={1} intensity={0.5} castShadow />
 
         <Suspense fallback={<LoadingFallback />}>
-          {modelUrl && (
-            <SimpleCenter>
-              <GLBModel url={modelUrl} />
-            </SimpleCenter>
-          )}
+          <GLBModel url={modelUrl} />
 
           <OrbitControls
             enablePan={true}
